@@ -23,25 +23,21 @@ export function parsePoint(wkt) {
 }
 
 /**
- * Alle adressen binnen `radius` meter van de positie (max. 100 per keer).
+ * Alle adressen binnen `radius` meter van de positie (max. 50 per keer).
  * Geeft {current, streets, addresses} terug:
  *  - current: straat/plaats van het dichtstbijzijnde adres
  *  - streets: unieke [{straat, plaats}] binnen de straal
  *  - addresses: [{straat, nummer, plaats, afstand}]
  */
 export async function nearbyAddresses(lat, lon, radius, fetchFn = fetch) {
-  const url = `${PDOK}/reverse?lat=${lat}&lon=${lon}&type=adres&distance=${radius}&rows=100`;
+  const fl = encodeURIComponent("straatnaam huisnummer woonplaatsnaam weergavenaam afstand");
+  const url = `${PDOK}/reverse?lat=${lat}&lon=${lon}&type=adres&distance=${Math.round(radius)}&rows=50&fl=${fl}`;
   const res = await fetchFn(url);
   if (!res.ok) throw new Error(`PDOK fout ${res.status}`);
   const docs = (await res.json()).response?.docs ?? [];
   const addresses = docs
-    .filter((d) => d.straatnaam && d.huisnummer != null)
-    .map((d) => ({
-      straat: d.straatnaam,
-      nummer: Number(d.huisnummer),
-      plaats: d.woonplaatsnaam,
-      afstand: Number(d.afstand ?? 0),
-    }))
+    .map(toAddress)
+    .filter(Boolean)
     .sort((a, b) => a.afstand - b.afstand);
   const seen = new Map();
   for (const a of addresses) {
@@ -51,10 +47,25 @@ export async function nearbyAddresses(lat, lon, radius, fetchFn = fetch) {
   return { current: addresses[0] ?? null, streets: [...seen.values()], addresses };
 }
 
+/**
+ * PDOK-document -> adres. Gebruikt de losse velden, of anders de
+ * weergavenaam ("Julianalaan 12A, 9781EK Bedum").
+ */
+export function toAddress(d) {
+  let straat = d.straatnaam, nummer = d.huisnummer, plaats = d.woonplaatsnaam;
+  if (!straat || nummer == null || !plaats) {
+    const m = /^(.+?) (\d+)\S*(?: \S+)?, (?:\d{4} ?[A-Z]{2} )?(.+)$/.exec(d.weergavenaam ?? "");
+    if (!m) return null;
+    [, straat, nummer, plaats] = m;
+  }
+  return { straat, nummer: Number(nummer), plaats, afstand: Number(d.afstand ?? 0) };
+}
+
 /** Coördinaten van één adres via PDOK (voor adressen buiten de top-100). */
 export async function geocode(straat, nummer, plaats, fetchFn = fetch) {
   const q = encodeURIComponent(`${straat} ${nummer} ${plaats}`);
-  const res = await fetchFn(`${PDOK}/free?q=${q}&fq=type:adres&rows=1`);
+  const fl = encodeURIComponent("straatnaam huisnummer centroide_ll");
+  const res = await fetchFn(`${PDOK}/free?q=${q}&fq=type:adres&rows=1&fl=${fl}`);
   if (!res.ok) return null;
   const doc = (await res.json()).response?.docs?.[0];
   if (!doc || doc.straatnaam?.toLowerCase() !== straat.toLowerCase()) return null;

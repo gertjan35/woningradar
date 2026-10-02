@@ -90,8 +90,8 @@ function gpsError(e) {
 }
 
 async function onPosition(p) {
-  const pos = { lat: p.coords.latitude, lon: p.coords.longitude };
   const acc = Math.round(p.coords.accuracy);
+  const pos = { lat: p.coords.latitude, lon: p.coords.longitude, acc };
   $("status").textContent = `Nauwkeurigheid ± ${acc} m`;
 
   const moved = lastScanPos ? haversine(pos.lat, pos.lon, lastScanPos.lat, lastScanPos.lon) : Infinity;
@@ -114,8 +114,12 @@ async function onPosition(p) {
 
 // --- zoeken ---
 async function scan(pos) {
-  const { current, streets, addresses } = await nearbyAddresses(pos.lat, pos.lon, settings.radius);
-  $("street").textContent = current ? `${current.straat}, ${current.plaats}` : "Geen adres in de buurt";
+  // Bij onnauwkeurige GPS kijken we iets ruimer rond, anders mist de app straten.
+  const searchRadius = settings.radius + Math.min(pos.acc ?? 0, 200);
+  const { current, streets, addresses } = await nearbyAddresses(pos.lat, pos.lon, searchRadius);
+  $("street").textContent = current
+    ? `${current.straat}, ${current.plaats}`
+    : `Geen adres binnen ${searchRadius} m (${pos.lat.toFixed(5)}, ${pos.lon.toFixed(5)})`;
   if (!streets.length) return;
 
   for (const { straat, plaats } of streets) {

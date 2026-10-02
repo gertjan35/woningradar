@@ -97,6 +97,7 @@ enum Core {
             let straatnaam: String?
             let huisnummer: Int?
             let woonplaatsnaam: String?
+            let weergavenaam: String?
             let afstand: Double?
             let centroide_ll: String?
         }
@@ -105,12 +106,25 @@ enum Core {
 
     /// Adressen binnen `radius` meter, dichtstbijzijnde eerst.
     static func nearbyAddresses(_ c: CLLocationCoordinate2D, radius: Int) async throws -> [NearbyAddress] {
-        let url = URL(string: "\(pdok)/reverse?lat=\(c.latitude)&lon=\(c.longitude)&type=adres&distance=\(radius)&rows=100")!
-        let (data, _) = try await URLSession.shared.data(from: url)
+        var comps = URLComponents(string: "\(pdok)/reverse")!
+        comps.queryItems = [
+            .init(name: "lat", value: String(c.latitude)),
+            .init(name: "lon", value: String(c.longitude)),
+            .init(name: "type", value: "adres"),
+            .init(name: "distance", value: String(radius)),
+            .init(name: "rows", value: "50"),
+            .init(name: "fl", value: "straatnaam huisnummer woonplaatsnaam weergavenaam afstand"),
+        ]
+        let (data, _) = try await URLSession.shared.data(from: comps.url!)
         let docs = try JSONDecoder().decode(PDOKResponse.self, from: data).response.docs
         return docs.compactMap { d in
-            guard let s = d.straatnaam, let n = d.huisnummer, let p = d.woonplaatsnaam else { return nil }
-            return NearbyAddress(straat: s, nummer: n, plaats: p, afstand: d.afstand ?? 0)
+            if let s = d.straatnaam, let n = d.huisnummer, let p = d.woonplaatsnaam {
+                return NearbyAddress(straat: s, nummer: n, plaats: p, afstand: d.afstand ?? 0)
+            }
+            // Terugval: "Julianalaan 12A, 9781EK Bedum"
+            guard let m = (d.weergavenaam ?? "").firstMatch(of: #/^(.+?) (\d+)\S*(?: \S+)?, (?:\d{4} ?[A-Z]{2} )?(.+)$/#),
+                  let n = Int(m.2) else { return nil }
+            return NearbyAddress(straat: String(m.1), nummer: n, plaats: String(m.3), afstand: d.afstand ?? 0)
         }
         .sorted { $0.afstand < $1.afstand }
     }
@@ -131,6 +145,7 @@ enum Core {
             URLQueryItem(name: "q", value: "\(straat) \(nummer) \(plaats)"),
             URLQueryItem(name: "fq", value: "type:adres"),
             URLQueryItem(name: "rows", value: "1"),
+            URLQueryItem(name: "fl", value: "straatnaam huisnummer centroide_ll"),
         ]
         guard let (data, _) = try? await URLSession.shared.data(from: comps.url!),
               let doc = try? JSONDecoder().decode(PDOKResponse.self, from: data).response.docs.first,

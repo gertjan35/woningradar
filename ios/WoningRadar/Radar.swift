@@ -97,7 +97,7 @@ final class Radar: NSObject, ObservableObject {
         lastScanTime = .now
         defer { scanning = false }
         do {
-            try await scan(location.coordinate)
+            try await scan(location.coordinate, accuracy: location.horizontalAccuracy)
             errorMessage = nil
             status = "Laatst gezocht om \(Date.now.formatted(date: .omitted, time: .shortened)) · ± \(Int(location.horizontalAccuracy)) m"
         } catch {
@@ -105,10 +105,12 @@ final class Radar: NSObject, ObservableObject {
         }
     }
 
-    private func scan(_ pos: CLLocationCoordinate2D) async throws {
+    private func scan(_ pos: CLLocationCoordinate2D, accuracy: Double) async throws {
         let radius = radius
-        let addresses = try await Core.nearbyAddresses(pos, radius: radius)
-        currentStreet = addresses.first.map { "\($0.straat), \($0.plaats)" } ?? "Geen adres in de buurt"
+        // Bij onnauwkeurige GPS kijken we iets ruimer rond, anders mist de app straten.
+        let searchRadius = radius + Int(min(accuracy, 200))
+        let addresses = try await Core.nearbyAddresses(pos, radius: searchRadius)
+        currentStreet = addresses.first.map { "\($0.straat), \($0.plaats)" } ?? "Geen adres binnen \(searchRadius) m"
 
         for street in Core.streets(in: addresses) {
             let results = try await search(street)

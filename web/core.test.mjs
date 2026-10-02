@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   extractPrice, extractNumbers, parseResults, filterByDistance,
-  nearbyAddresses, haversine, parsePoint,
+  nearbyAddresses, haversine, parsePoint, toAddress,
 } from "./core.js";
 
 test("prijs met k.k.", () => {
@@ -72,4 +72,20 @@ test("nearbyAddresses groepeert straten", async () => {
 test("haversine en parsePoint", () => {
   assert.deepEqual(parsePoint("POINT(6.6 53.3)"), { lon: 6.6, lat: 53.3 });
   assert.ok(Math.abs(haversine(53, 6, 53.001, 6) - 111.2) < 1);
+});
+
+test("adres uit weergavenaam (standaardantwoord PDOK)", () => {
+  assert.deepEqual(toAddress({ weergavenaam: "Julianalaan 12, 9781EK Bedum", afstand: 4.5 }),
+    { straat: "Julianalaan", nummer: 12, plaats: "Bedum", afstand: 4.5 });
+  assert.deepEqual(toAddress({ weergavenaam: "Van der Veenstraat 3A-2, 9781AB Bedum", afstand: 1 }),
+    { straat: "Van der Veenstraat", nummer: 3, plaats: "Bedum", afstand: 1 });
+  assert.deepEqual(toAddress({ weergavenaam: "Hoofdweg 120 bis, 9781AB Bedum", afstand: 1 }).nummer, 120);
+  assert.equal(toAddress({ weergavenaam: "Bedum" }), null);
+});
+
+test("nearbyAddresses met alleen weergavenaam", async () => {
+  const fetchFn = fakeFetch({ reverse: { response: { docs: [
+    { type: "adres", weergavenaam: "Julianalaan 12, 9781EK Bedum", afstand: 3 } ] } } });
+  const r = await nearbyAddresses(53.3, 6.6, 100, fetchFn);
+  assert.equal(r.current.straat, "Julianalaan");
 });
