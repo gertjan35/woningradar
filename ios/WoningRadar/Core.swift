@@ -183,7 +183,7 @@ enum Core {
             if after.firstMatch(of: #/^\s*(per maand|p\/m|\/\s*m|\/mnd|per mnd)/#) != nil { continue }
             // Alleen de woorden direct voor het bedrag (sinds het vorige bedrag of leesteken).
             let before = String(text[..<m.range.lowerBound].suffix(30))
-                .split(whereSeparator: { "€,;|•\n".contains($0) }, omittingEmptySubsequences: false)
+                .split(omittingEmptySubsequences: false, whereSeparator: { "€,;|•\n".contains($0) })
                 .last.map { $0.lowercased() } ?? ""
             if before.firstMatch(of: #/woz|waarde|geschat|indicatie/#) != nil { continue }
             guard (25_000...50_000_000).contains(value) else { continue }
