@@ -73,8 +73,19 @@ export async function geocode(straat, nummer, plaats, fetchFn = fetch) {
   return parsePoint(doc.centroide_ll);
 }
 
+/** Alleen resultaten van deze sites tellen mee. */
+export const SITES = ["funda.nl", "huispedia.nl"];
+
 export function searchQuery(straat, plaats) {
-  return `"${straat}" ${plaats} koopwoning te koop`;
+  const sites = SITES.map((s) => `site:${s}`).join(" OR ");
+  return `"${straat}" ${plaats} te koop (${sites})`;
+}
+
+/** "www.funda.nl" -> "funda.nl" als de link bij een van de SITES hoort, anders null. */
+export function siteOf(link) {
+  let host;
+  try { host = new URL(link).hostname.toLowerCase(); } catch { return null; }
+  return SITES.find((s) => host === s || host.endsWith("." + s)) ?? null;
 }
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -87,6 +98,9 @@ export function extractPrice(text) {
     const value = parseInt(m[1].replace(/[.\s]/g, ""), 10);
     const after = text.slice(m.index + m[0].length, m.index + m[0].length + 20).toLowerCase();
     if (/^\s*(per maand|p\/m|\/\s*m|\/mnd|per mnd)/.test(after)) continue; // huurprijs
+    // Alleen de woorden direct voor het bedrag (sinds het vorige bedrag of leesteken).
+    const before = text.slice(Math.max(0, m.index - 30), m.index).split(/[€,;|•\n]/).pop().toLowerCase();
+    if (/woz|waarde|geschat|indicatie/.test(before)) continue; // geen vraagprijs
     if (value >= 25000 && value <= 50000000) {
       return { value, label: `€ ${value.toLocaleString("nl-NL")}${m[2] ? " " + m[2].trim() : ""}` };
     }
@@ -106,22 +120,25 @@ export function extractNumbers(text, straat) {
 /**
  * Zet zoekresultaten (SerpApi organic_results) om naar kandidaat-woningen:
  * [{straat, nummer, plaats, prijs, link, bron}]. Resultaten met meerdere
- * huisnummers (overzichtspagina's), zonder prijs of met "verkocht" vallen af.
+ * huisnummers (overzichtspagina's), zonder prijs, met "verkocht" of van
+ * andere sites dan SITES vallen af.
  */
 export function parseResults(results, straat, plaats) {
   const out = [];
   for (const r of results ?? []) {
+    const bron = siteOf(r.link);
+    if (!bron) continue;
     const text = [r.title, r.snippet, r.rich_snippet ? JSON.stringify(r.rich_snippet) : ""]
       .filter(Boolean)
       .join(" • ");
     if (/\bverkocht\b/i.test(text)) continue;
     if (/\bte huur\b|\bhuurwoning\b|\bhuurprijs\b/i.test(text)) continue;
+    // Huispedia toont ook woningen die niet te koop staan.
+    if (!/te koop|vraagprijs|k\.k\.|v\.o\.n\./i.test(text)) continue;
     const nums = extractNumbers(text, straat);
     if (nums.length !== 1) continue;
     const prijs = extractPrice(text);
     if (!prijs) continue;
-    let bron = "";
-    try { bron = new URL(r.link).hostname.replace(/^www\./, ""); } catch {}
     out.push({ straat, nummer: nums[0], plaats, prijs, link: r.link, bron });
   }
   // Zelfde woning op meerdere sites: houd de eerste.

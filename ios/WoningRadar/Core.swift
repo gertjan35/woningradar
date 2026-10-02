@@ -85,8 +85,18 @@ enum JSONValue: Codable, Hashable {
 enum Core {
     static let pdok = "https://api.pdok.nl/bzk/locatieserver/search/v3_1"
 
+    /// Alleen resultaten van deze sites tellen mee.
+    static let sites = ["funda.nl", "huispedia.nl"]
+
     static func searchQuery(_ s: Street) -> String {
-        "\"\(s.straat)\" \(s.plaats) koopwoning te koop"
+        let filter = sites.map { "site:\($0)" }.joined(separator: " OR ")
+        return "\"\(s.straat)\" \(s.plaats) te koop (\(filter))"
+    }
+
+    /// "www.funda.nl" -> "funda.nl" als de link bij een van de sites hoort, anders nil.
+    static func site(of link: String) -> String? {
+        guard let host = URL(string: link)?.host()?.lowercased() else { return nil }
+        return sites.first { host == $0 || host.hasSuffix("." + $0) }
     }
 
     // MARK: PDOK
@@ -171,6 +181,11 @@ enum Core {
             guard let value = Int(digits) else { continue }
             let after = text[m.range.upperBound...].prefix(20).lowercased()
             if after.firstMatch(of: #/^\s*(per maand|p\/m|\/\s*m|\/mnd|per mnd)/#) != nil { continue }
+            // Alleen de woorden direct voor het bedrag (sinds het vorige bedrag of leesteken).
+            let before = String(text[..<m.range.lowerBound].suffix(30))
+                .split(whereSeparator: { "€,;|•\n".contains($0) }, omittingEmptySubsequences: false)
+                .last.map { $0.lowercased() } ?? ""
+            if before.firstMatch(of: #/woz|waarde|geschat|indicatie/#) != nil { continue }
             guard (25_000...50_000_000).contains(value) else { continue }
             let suffix = m.2.map { " " + $0.trimmingCharacters(in: .whitespaces) } ?? ""
             return Price(value: value, label: "€ \(formatNumber(value))\(suffix)")
@@ -200,15 +215,17 @@ enum Core {
     static func parseResults(_ results: [SearchResult], street: Street) -> [Listing] {
         var out: [Listing] = []
         for r in results {
+            guard let link = r.link, let bron = site(of: link) else { continue }
             let text = [r.title, r.snippet, r.richSnippet?.text].compactMap { $0 }.joined(separator: " • ")
             let lower = text.lowercased()
             if lower.firstMatch(of: #/\bverkocht\b/#) != nil { continue }
             if lower.firstMatch(of: #/\bte huur\b|\bhuurwoning\b|\bhuurprijs\b/#) != nil { continue }
+            // Huispedia toont ook woningen die niet te koop staan.
+            if lower.firstMatch(of: #/te koop|vraagprijs|k\.k\.|v\.o\.n\./#) == nil { continue }
             let nums = extractNumbers(text, straat: street.straat)
-            guard nums.count == 1, let prijs = extractPrice(text), let link = r.link else { continue }
-            let host = URL(string: link)?.host()?.replacingOccurrences(of: "www.", with: "") ?? ""
+            guard nums.count == 1, let prijs = extractPrice(text) else { continue }
             let l = Listing(straat: street.straat, nummer: nums[0], plaats: street.plaats,
-                            prijs: prijs, link: link, bron: host)
+                            prijs: prijs, link: link, bron: bron)
             if !out.contains(where: { $0.id == l.id }) { out.append(l) }
         }
         return out

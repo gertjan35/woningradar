@@ -13,8 +13,8 @@ Er zijn twee versies:
 ## Hoe het werkt
 
 1. **Positie → straten.** De app stuurt je GPS-positie naar de [PDOK Locatieserver](https://www.pdok.nl/introductie/-/article/pdok-locatieserver) (Kadaster, gratis, geen sleutel nodig). Die geeft alle adressen binnen de straal terug, met de afstand tot jou. Daaruit volgen je huidige straat en alle straten in de buurt.
-2. **Straat → Google.** Per straat zoekt de app op Google naar `"Julianalaan" Bedum koopwoning te koop`. Dat gaat via [SerpApi](https://serpapi.com), een dienst die Google-resultaten als data teruggeeft. Google zelf blokkeert automatische zoekopdrachten.
-3. **Resultaten uitlezen.** De app haalt uit elk zoekresultaat het huisnummer en de vraagprijs, bijvoorbeeld uit "Julianalaan 12 … € 325.000 k.k.". Resultaten die "verkocht" of "te huur" noemen vallen af, net als overzichtspagina's met meerdere huisnummers.
+2. **Straat → Google.** Per straat zoekt de app op Google naar `"Julianalaan" Bedum te koop (site:funda.nl OR site:huispedia.nl)`. Alleen resultaten van **funda.nl** en **huispedia.nl** tellen mee (aan te passen via `SITES` in `web/core.js` en `sites` in `ios/WoningRadar/Core.swift`). Dat gaat via [SerpApi](https://serpapi.com), een dienst die Google-resultaten als data teruggeeft. Google zelf blokkeert automatische zoekopdrachten.
+3. **Resultaten uitlezen.** De app haalt uit elk zoekresultaat het huisnummer en de vraagprijs, bijvoorbeeld uit "Julianalaan 12 … € 325.000 k.k.". Resultaten die "verkocht" of "te huur" noemen vallen af, net als overzichtspagina's met meerdere huisnummers. Een resultaat telt alleen als het "te koop", "vraagprijs", "k.k." of "v.o.n." noemt, en bedragen bij "WOZ" of "geschatte waarde" (Huispedia) worden genegeerd.
 4. **Afstand.** Het gevonden adres wordt vergeleken met de PDOK-adressen uit stap 1. Staat het daar niet tussen, dan zoekt de app de coördinaten van dat adres op. Alleen woningen binnen de straal blijven over.
 5. **Melding.** Je krijgt een pop-up en een melding voor elke nieuwe woning, en opnieuw als de vraagprijs verandert.
 

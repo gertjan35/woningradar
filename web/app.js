@@ -138,12 +138,13 @@ async function scan(pos) {
 }
 
 async function searchStreet(straat, plaats) {
-  const key = `${straat}|${plaats}`;
+  const query = searchQuery(straat, plaats);
+  const key = query; // nieuwe zoekopdracht = nieuwe cache
   const cached = streetCache[key];
   if (cached && Date.now() - cached.t < settings.cacheHours * 3600e3) return cached.results;
 
   $("status").textContent = `Zoeken: ${straat}…`;
-  const res = await fetch("api/search?q=" + encodeURIComponent(searchQuery(straat, plaats)), {
+  const res = await fetch("api/search?q=" + encodeURIComponent(query), {
     headers: { "x-access-token": settings.token },
   });
   const data = await res.json().catch(() => ({}));

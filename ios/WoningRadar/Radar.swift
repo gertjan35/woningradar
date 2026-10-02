@@ -135,7 +135,8 @@ final class Radar: NSObject, ObservableObject {
     }
 
     private func search(_ street: Street) async throws -> [SearchResult] {
-        let key = "\(street.straat)|\(street.plaats)"
+        let query = Core.searchQuery(street)
+        let key = query // nieuwe zoekopdracht = nieuwe cache
         let maxAge = Double(max(1, defaults.integer(forKey: SettingsKey.cacheHours))) * 3600
         if let c = streetCache[key], Date.now.timeIntervalSince(c.t) < maxAge { return c.results }
 
@@ -144,7 +145,7 @@ final class Radar: NSObject, ObservableObject {
             serpApiKey: defaults.string(forKey: SettingsKey.serpApiKey) ?? "",
             serverURL: defaults.string(forKey: SettingsKey.serverURL) ?? "",
             accessToken: defaults.string(forKey: SettingsKey.accessToken) ?? "")
-        let results = try await client.search(Core.searchQuery(street))
+        let results = try await client.search(query)
         countSearch()
 
         streetCache[key] = CachedStreet(t: .now, results: results)

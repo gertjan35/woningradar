@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   extractPrice, extractNumbers, parseResults, filterByDistance,
-  nearbyAddresses, haversine, parsePoint, toAddress,
+  nearbyAddresses, haversine, parsePoint, toAddress, searchQuery, siteOf,
 } from "./core.js";
 
 test("prijs met k.k.", () => {
@@ -26,16 +26,32 @@ test("huisnummers", () => {
 
 const results = [
   { title: "Huis te koop: Julianalaan 12 9781 EK Bedum [funda]", snippet: "Vraagprijs € 325.000 k.k. Woonoppervlakte 120 m²", link: "https://www.funda.nl/koop/bedum/huis-1/" },
-  { title: "Julianalaan 12, Bedum", snippet: "€ 325.000 k.k.", link: "https://www.jaap.nl/x" },
-  { title: "Koopwoningen Julianalaan Bedum", snippet: "Julianalaan 3 € 250.000 k.k., Julianalaan 5 € 300.000 k.k.", link: "https://x.nl" },
-  { title: "Verkocht: Julianalaan 8 Bedum", snippet: "€ 280.000 k.k.", link: "https://x.nl/8" },
-  { title: "Julianalaan 20 Bedum", snippet: "Geen prijs bekend", link: "https://x.nl/20" },
-  { title: "Julianalaan 30 Bedum", snippet: "", rich_snippet: { top: { extensions: ["€ 410.000 k.k.", "4 kamers"] } }, link: "https://x.nl/30" },
+  { title: "Julianalaan 12, Bedum", snippet: "€ 325.000 k.k.", link: "https://huispedia.nl/bedum/9781ek/julianalaan/12" },
+  { title: "Julianalaan 14 Bedum te koop", snippet: "Vraagprijs € 299.000 k.k.", link: "https://www.jaap.nl/x" },
+  { title: "Koopwoningen Julianalaan Bedum", snippet: "Julianalaan 3 € 250.000 k.k., Julianalaan 5 € 300.000 k.k.", link: "https://www.funda.nl/koop/bedum/" },
+  { title: "Verkocht: Julianalaan 8 Bedum", snippet: "€ 280.000 k.k.", link: "https://www.funda.nl/8" },
+  { title: "Julianalaan 20 Bedum", snippet: "Geen prijs bekend", link: "https://www.funda.nl/20" },
+  { title: "Julianalaan 22, Bedum | Huispedia", snippet: "Geschatte waarde € 345.000. WOZ-waarde € 301.000", link: "https://huispedia.nl/bedum/9781ek/julianalaan/22" },
+  { title: "Julianalaan 30 Bedum", snippet: "", rich_snippet: { top: { extensions: ["€ 410.000 k.k.", "4 kamers"] } }, link: "https://huispedia.nl/30" },
 ];
 
-test("zoekresultaten uitlezen", () => {
+test("zoekresultaten uitlezen: alleen funda/huispedia en alleen te koop", () => {
   const w = parseResults(results, "Julianalaan", "Bedum");
-  assert.deepEqual(w.map((x) => [x.nummer, x.prijs.value, x.bron]), [[12, 325000, "funda.nl"], [30, 410000, "x.nl"]]);
+  assert.deepEqual(w.map((x) => [x.nummer, x.prijs.value, x.bron]), [[12, 325000, "funda.nl"], [30, 410000, "huispedia.nl"]]);
+});
+
+test("zoekopdracht en sitefilter", () => {
+  assert.equal(searchQuery("Julianalaan", "Bedum"), '"Julianalaan" Bedum te koop (site:funda.nl OR site:huispedia.nl)');
+  assert.equal(siteOf("https://www.funda.nl/koop/x"), "funda.nl");
+  assert.equal(siteOf("https://huispedia.nl/x"), "huispedia.nl");
+  assert.equal(siteOf("https://nietfunda.nl/x"), null);
+  assert.equal(siteOf("https://jaap.nl/x"), null);
+});
+
+test("WOZ of geschatte waarde is geen vraagprijs", () => {
+  assert.equal(extractPrice("WOZ-waarde € 301.000"), null);
+  assert.equal(extractPrice("Geschatte waarde: € 345.000"), null);
+  assert.equal(extractPrice("Geschatte waarde € 345.000, vraagprijs € 339.000 k.k.").value, 339000);
 });
 
 const fakeFetch = (routes) => async (url) => {
