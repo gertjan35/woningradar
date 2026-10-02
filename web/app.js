@@ -85,7 +85,7 @@ document.addEventListener("visibilitychange", () => {
 
 function gpsError(e) {
   return e.code === 1
-    ? "Geen toestemming voor locatie. Zet dit aan via Instellingen → Safari → Locatie."
+    ? "Geen toestemming voor locatie. Zet aan via Instellingen → Privacy en beveiliging → Locatievoorzieningen → Safari-websites → Bij gebruik van app (met Nauwkeurige locatie aan). Sluit daarna de app helemaal af en open hem opnieuw."
     : "Locatie niet beschikbaar (" + e.message + ").";
 }
 
