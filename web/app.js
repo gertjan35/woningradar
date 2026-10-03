@@ -19,26 +19,30 @@ const settings = {
   token: store.get("token", ""),
   cacheHours: store.get("cacheHours", 24),
   circleMax: store.get("circleMax", 1000),
+  interval: store.get("interval", 60),     // seconden tussen controles
+  minMove: store.get("minMove", 20),       // meter verplaatsing voor een nieuwe zoekronde
 };
 let streetCache = store.get("streetCache", {});   // "straat|plaats" -> {t, results}
 let found = store.get("found", {});               // "straat|nr|plaats" -> woning
 let quota = store.get("quota", { month: "", count: 0 });
 
 let watchId = null;
+let timerId = null;
+let latestPos = null;
 let lastScanPos = null;
-let lastScanTime = 0;
 let scanning = false;
 let circleNote = "";
 let wakeLock = null;
 
 // --- instellingen ---
-for (const key of ["radius", "token", "cacheHours", "circleMax"]) {
+for (const key of ["radius", "token", "cacheHours", "circleMax", "interval", "minMove"]) {
   $(key).value = settings[key];
   $(key).addEventListener("change", () => {
     settings[key] = key === "token" ? $(key).value.trim() : Number($(key).value);
     store.set(key, settings[key]);
     render();
-    if (key === "radius" || key === "circleMax") lastScanPos = null; // opnieuw zoeken bij volgende positie
+    if (key === "radius" || key === "circleMax") lastScanPos = null; // opnieuw zoeken bij volgende controle
+    if (key === "interval" && timerId != null) startTimer();
   });
 }
 
@@ -67,14 +71,23 @@ function start() {
   watchId = navigator.geolocation.watchPosition(onPosition, (e) => showError(gpsError(e)), {
     enableHighAccuracy: true, maximumAge: 10000, timeout: 30000,
   });
+  startTimer();
   $("toggle").textContent = "Stop";
   $("status").textContent = "Locatie bepalen…";
   keepAwake();
 }
 
+/** Controleert elke `interval` seconden of je bent verplaatst. */
+function startTimer() {
+  clearInterval(timerId);
+  timerId = setInterval(check, Math.max(15, settings.interval) * 1000);
+}
+
 function stop() {
   navigator.geolocation.clearWatch(watchId);
-  watchId = null;
+  clearInterval(timerId);
+  watchId = timerId = null;
+  latestPos = null;
   $("toggle").textContent = "Start";
   $("status").textContent = "Gestopt.";
   wakeLock?.release().catch(() => {});
@@ -94,23 +107,32 @@ function gpsError(e) {
     : "Locatie niet beschikbaar (" + e.message + ").";
 }
 
-async function onPosition(p) {
-  const acc = Math.round(p.coords.accuracy);
-  const pos = { lat: p.coords.latitude, lon: p.coords.longitude, acc };
-  $("status").textContent = `Nauwkeurigheid ± ${acc} m`;
+/** Bewaart alleen de nieuwste positie; zoeken gebeurt in check(). */
+function onPosition(p) {
+  const first = !latestPos;
+  latestPos = { lat: p.coords.latitude, lon: p.coords.longitude, acc: Math.round(p.coords.accuracy) };
+  if (first) check(); // eerste positie: meteen zoeken
+}
 
+/** Elke minuut: is de positie veranderd sinds de vorige zoekronde? Dan opnieuw zoeken. */
+async function check() {
+  const pos = latestPos;
+  if (!pos || scanning) return;
+  const acc = pos.acc;
   const moved = lastScanPos ? haversine(pos.lat, pos.lon, lastScanPos.lat, lastScanPos.lon) : Infinity;
-  const minMove = Math.max(25, settings.radius / 2);
-  if (scanning || moved < minMove || Date.now() - lastScanTime < 20000) return;
+  const time = new Date().toLocaleTimeString("nl-NL", { timeStyle: "short" });
+  if (moved < settings.minMove) {
+    $("status").textContent = `Gecontroleerd om ${time}: niet verplaatst · ± ${acc} m` + (circleNote ? ` · ${circleNote}` : "");
+    return;
+  }
 
   scanning = true;
   lastScanPos = pos;
-  lastScanTime = Date.now();
   try {
     circleNote = "";
     await scan(pos);
     showError("");
-    $("status").textContent = `Laatst gezocht om ${new Date().toLocaleTimeString("nl-NL", { timeStyle: "short" })} · ± ${acc} m` +
+    $("status").textContent = `Laatst gezocht om ${time} · ± ${acc} m` +
       (circleNote ? ` · ${circleNote}` : "");
   } catch (e) {
     showError(e.message);

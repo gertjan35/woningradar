@@ -10,9 +10,11 @@ enum SettingsKey {
     static let accessToken = "accessToken"
     static let background = "background"      // ook zoeken als de app op de achtergrond is
     static let circleMax = "circleMax"        // niets gevonden? zoek in een cirkel tot x meter (0 = uit)
+    static let interval = "interval"          // seconden tussen controles
+    static let minMove = "minMove"            // meter verplaatsing voor een nieuwe zoekronde
 
     static func registerDefaults() {
-        UserDefaults.standard.register(defaults: [radius: 100, cacheHours: 24, background: true, circleMax: 1000])
+        UserDefaults.standard.register(defaults: [radius: 100, cacheHours: 24, background: true, circleMax: 1000, interval: 60, minMove: 20])
     }
 }
 
@@ -30,7 +32,8 @@ final class Radar: NSObject, ObservableObject {
     private let manager = CLLocationManager()
     private let defaults = UserDefaults.standard
     private var lastScanLocation: CLLocation?
-    private var lastScanTime = Date.distantPast
+    private var latestLocation: CLLocation?
+    private var timerTask: Task<Void, Never>?
     private var scanning = false
     private var circleNote: String?
     private var streetCache: [String: CachedStreet] = [:]
@@ -62,13 +65,31 @@ final class Radar: NSObject, ObservableObject {
         if background { manager.requestAlwaysAuthorization() } else { manager.requestWhenInUseAuthorization() }
         manager.allowsBackgroundLocationUpdates = background
         manager.showsBackgroundLocationIndicator = background
-        manager.distanceFilter = max(20, Double(radius) / 4)
+        manager.distanceFilter = 5
         manager.startUpdatingLocation()
         isRunning = true
         status = "Locatie bepalen…"
+        startTimer()
+    }
+
+    /// Controleert elke `interval` seconden (standaard 60) of je bent verplaatst.
+    /// Loopt ook op de achtergrond door, omdat de locatie-updates de app wakker houden.
+    private func startTimer() {
+        timerTask?.cancel()
+        let seconds = max(15, defaults.integer(forKey: SettingsKey.interval))
+        timerTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(seconds))
+                guard !Task.isCancelled else { return }
+                await self?.check()
+            }
+        }
     }
 
     func stop() {
+        timerTask?.cancel()
+        timerTask = nil
+        latestLocation = nil
         manager.stopUpdatingLocation()
         isRunning = false
         status = "Gestopt."
@@ -88,21 +109,34 @@ final class Radar: NSObject, ObservableObject {
 
     // MARK: Zoeken
 
+    /// Bewaart alleen de nieuwste positie; zoeken gebeurt in check().
     private func handle(_ location: CLLocation) async {
         guard location.horizontalAccuracy >= 0, location.horizontalAccuracy < 100 else { return }
+        let first = latestLocation == nil
+        latestLocation = location
+        if first { await check() } // eerste positie: meteen zoeken
+    }
+
+    /// Elke minuut: is de positie veranderd sinds de vorige zoekronde? Dan opnieuw zoeken.
+    private func check() async {
+        guard let location = latestLocation, !scanning else { return }
         let moved = lastScanLocation.map { location.distance(from: $0) } ?? .infinity
-        let minMove = max(25, Double(radius) / 2)
-        guard !scanning, moved >= minMove, Date.now.timeIntervalSince(lastScanTime) > 20 else { return }
+        let minMove = Double(max(5, defaults.integer(forKey: SettingsKey.minMove)))
+        let time = Date.now.formatted(date: .omitted, time: .shortened)
+        guard moved >= minMove else {
+            status = "Gecontroleerd om \(time): niet verplaatst · ± \(Int(location.horizontalAccuracy)) m"
+                + (circleNote.map { " · \($0)" } ?? "")
+            return
+        }
 
         scanning = true
         lastScanLocation = location
-        lastScanTime = .now
         defer { scanning = false }
         do {
             circleNote = nil
             try await scan(location.coordinate, accuracy: location.horizontalAccuracy)
             errorMessage = nil
-            status = "Laatst gezocht om \(Date.now.formatted(date: .omitted, time: .shortened)) · ± \(Int(location.horizontalAccuracy)) m"
+            status = "Laatst gezocht om \(time) · ± \(Int(location.horizontalAccuracy)) m"
                 + (circleNote.map { " · \($0)" } ?? "")
         } catch {
             errorMessage = error.localizedDescription

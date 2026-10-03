@@ -19,7 +19,9 @@ Er zijn twee versies:
 5. **Niets gevonden? Zoeken in een cirkel.** Levert de eigen straat niets op, dan zoekt de app in steeds grotere cirkels (2×, 4×, … de straal, standaard tot 1000 m), ongeacht de straat- of plaatsnaam. Hij bepaalt welke postcodegebieden (4 cijfers, bijv. `9781`) in die cirkel liggen, zoekt daarop op Google, leest uit elk resultaat postcode + huisnummer, zoekt daar bij PDOK het adres en de afstand bij, en meldt de woningen in de kleinste cirkel waarin iets te koop staat. Instelbaar of uit te zetten bij Instellingen.
 6. **Melding.** Je krijgt een pop-up en een melding voor elke nieuwe woning, en opnieuw als de vraagprijs verandert.
 
-**Zuinig met je zoektegoed.** Het gratis SerpApi-abonnement geeft 250 zoekopdrachten per maand. Daarom zoekt de app een straat hooguit één keer per 24 uur (instelbaar) en pas opnieuw als je minstens de halve straal bent verplaatst. Het aantal zoekopdrachten van deze maand staat in de app.
+**Elke minuut controleren.** Zolang de app aan staat, kijkt hij elke 60 seconden of je bent verplaatst (standaard minstens 20 m). Zo ja, dan zoekt hij opnieuw; zo nee, dan staat er "niet verplaatst". Beide zijn in te stellen bij Instellingen.
+
+**Zuinig met je zoektegoed.** Het gratis SerpApi-abonnement geeft 250 zoekopdrachten per maand. Daarom zoekt de app een straat hooguit één keer per 24 uur (instelbaar) en alleen als je bent verplaatst. Het aantal zoekopdrachten van deze maand staat in de app.
 
 ## Stap 1: SerpApi-sleutel
 
