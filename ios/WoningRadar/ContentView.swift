@@ -2,7 +2,6 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var radar: Radar
-    @AppStorage(SettingsKey.radius) private var radius = 100
     @State private var showSettings = false
 
     var body: some View {
@@ -40,7 +39,7 @@ struct ContentView: View {
                         }
                     }
                 } header: {
-                    Text("Te koop binnen \(radius) m")
+                    Text("Te koop in de buurt")
                 } footer: {
                     Text("\(radar.searchesThisMonth) zoekopdrachten deze maand")
                 }

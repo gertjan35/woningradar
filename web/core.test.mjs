@@ -105,3 +105,60 @@ test("nearbyAddresses met alleen weergavenaam", async () => {
   const r = await nearbyAddresses(53.3, 6.6, 100, fetchFn);
   assert.equal(r.current.straat, "Julianalaan");
 });
+
+import {
+  circleRings, offsetPoint, extractPostcodeAddresses, parseAreaResults,
+  postcodeAreas, areaQuery, locateAreaCandidates,
+} from "./core.js";
+
+test("cirkelringen", () => {
+  assert.deepEqual(circleRings(100, 1000), [200, 400, 800, 1000]);
+  assert.deepEqual(circleRings(100, 0), []);
+  const p = offsetPoint({ lat: 53.3, lon: 6.6 }, 500, 90);
+  assert.ok(Math.abs(haversine(53.3, 6.6, p.lat, p.lon) - 500) < 2);
+});
+
+test("adressen met postcode, ongeacht straatnaam", () => {
+  assert.deepEqual(extractPostcodeAddresses("Huis te koop: Schoolstraat 7a 9781 AB Bedum [funda]"),
+    [{ postcode: "9781AB", nummer: 7 }]);
+  assert.deepEqual(extractPostcodeAddresses("Van der Veenstraat 3-2, 9781AB Bedum"),
+    [{ postcode: "9781AB", nummer: 3 }]);
+  assert.deepEqual(extractPostcodeAddresses("Huispedia", "https://huispedia.nl/bedum/9781ek/julianalaan/12"),
+    [{ postcode: "9781EK", nummer: 12 }]);
+  assert.deepEqual(extractPostcodeAddresses("Vraagprijs € 325.000 k.k. 120 m² 9781 Bedum"), []);
+});
+
+const areaResults = [
+  { title: "Huis te koop: Schoolstraat 7 9781 AB Bedum [funda]", snippet: "Vraagprijs € 289.000 k.k.", link: "https://www.funda.nl/detail/koop/bedum/huis-schoolstraat-7/1/" },
+  { title: "Huizen te koop in Bedum 9781", snippet: "Kerkstraat 1 9781 AC € 200.000 k.k. Dorpsweg 4 9781 AD € 250.000 k.k.", link: "https://www.funda.nl/koop/bedum/" },
+  { title: "Kerkstraat 9, 9781 AC Bedum | Huispedia", snippet: "Te koop. Vraagprijs € 375.000 k.k.", link: "https://huispedia.nl/bedum/9781ac/kerkstraat/9" },
+  { title: "Dorpsweg 2 9781 AD Bedum", snippet: "WOZ-waarde € 240.000", link: "https://huispedia.nl/bedum/9781ad/dorpsweg/2" },
+  { title: "Hoofdweg 3 9781 AE Bedum te koop", snippet: "€ 199.000 k.k.", link: "https://www.jaap.nl/x" },
+];
+
+test("zoekresultaten van een postcodegebied uitlezen", () => {
+  const c = parseAreaResults(areaResults);
+  assert.deepEqual(c.map((x) => [x.postcode, x.nummer, x.prijs.value]), [["9781AB", 7, 289000], ["9781AC", 9, 375000]]);
+  assert.equal(areaQuery("9781", "Bedum"), '"9781" Bedum te koop (site:funda.nl OR site:huispedia.nl)');
+});
+
+test("postcodegebieden en afstand bij cirkelzoeken", async () => {
+  const pos = { lat: 53.2985, lon: 6.6036 };
+  const fetchFn = async (url) => {
+    let docs = [];
+    if (url.includes("/reverse")) {
+      const lat = Number(/lat=([\d.]+)/.exec(url)[1]);
+      docs = [{ postcode: lat > 53.3 ? "9781AB" : "9781EK", woonplaatsnaam: "Bedum" }];
+      if (lat < 53.296) docs = [{ postcode: "9782XX", woonplaatsnaam: "Noordwolde" }];
+    } else if (url.includes("9781AB")) {
+      docs = [{ straatnaam: "Schoolstraat", huisnummer: 7, postcode: "9781AB", woonplaatsnaam: "Bedum", centroide_ll: "POINT(6.6036 53.3010)" }];
+    } else if (url.includes("9781AC")) {
+      docs = [{ straatnaam: "Kerkstraat", huisnummer: 9, postcode: "9781AC", woonplaatsnaam: "Bedum", centroide_ll: "POINT(6.6036 53.3100)" }];
+    }
+    return { ok: true, json: async () => ({ response: { docs } }) };
+  };
+  const areas = await postcodeAreas(pos, 400, fetchFn);
+  assert.deepEqual(areas.map((a) => a.pc4).sort(), ["9781", "9782"]);
+  const near = await locateAreaCandidates(parseAreaResults(areaResults), pos, 1000, fetchFn);
+  assert.deepEqual(near.map((w) => [w.straat, w.nummer, w.afstand]), [["Schoolstraat", 7, 278]]);
+});

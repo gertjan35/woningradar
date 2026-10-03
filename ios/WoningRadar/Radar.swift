@@ -9,9 +9,10 @@ enum SettingsKey {
     static let serverURL = "serverURL"
     static let accessToken = "accessToken"
     static let background = "background"      // ook zoeken als de app op de achtergrond is
+    static let circleMax = "circleMax"        // niets gevonden? zoek in een cirkel tot x meter (0 = uit)
 
     static func registerDefaults() {
-        UserDefaults.standard.register(defaults: [radius: 100, cacheHours: 24, background: true])
+        UserDefaults.standard.register(defaults: [radius: 100, cacheHours: 24, background: true, circleMax: 1000])
     }
 }
 
@@ -31,6 +32,7 @@ final class Radar: NSObject, ObservableObject {
     private var lastScanLocation: CLLocation?
     private var lastScanTime = Date.distantPast
     private var scanning = false
+    private var circleNote: String?
     private var streetCache: [String: CachedStreet] = [:]
 
     private struct CachedStreet: Codable {
@@ -97,9 +99,11 @@ final class Radar: NSObject, ObservableObject {
         lastScanTime = .now
         defer { scanning = false }
         do {
+            circleNote = nil
             try await scan(location.coordinate, accuracy: location.horizontalAccuracy)
             errorMessage = nil
             status = "Laatst gezocht om \(Date.now.formatted(date: .omitted, time: .shortened)) · ± \(Int(location.horizontalAccuracy)) m"
+                + (circleNote.map { " · \($0)" } ?? "")
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -112,21 +116,19 @@ final class Radar: NSObject, ObservableObject {
         let addresses = try await Core.nearbyAddresses(pos, radius: searchRadius)
         currentStreet = addresses.first.map { "\($0.straat), \($0.plaats)" } ?? "Geen adres binnen \(searchRadius) m"
 
+        var hits = 0
         for street in Core.streets(in: addresses) {
-            let results = try await search(street)
+            let results = try await search(Core.searchQuery(street), label: street.straat)
             let candidates = Core.parseResults(results, street: street)
             let near = await Core.filterByDistance(candidates, from: pos, radius: radius, addresses: addresses)
-            for var w in near {
-                w.seen = .now
-                if let i = listings.firstIndex(where: { $0.id == w.id }) {
-                    let old = listings[i]
-                    listings[i] = w
-                    if old.prijs.value != w.prijs.value { announce(w, priceChanged: true) }
-                } else {
-                    listings.insert(w, at: 0)
-                    announce(w, priceChanged: false)
-                }
-            }
+            hits += near.count
+            near.forEach(remember)
+        }
+
+        // Niets in de eigen straten: zoek in steeds grotere cirkels, ongeacht straat of plaats.
+        let circleMax = defaults.integer(forKey: SettingsKey.circleMax)
+        if hits == 0 && circleMax > radius {
+            try await circleSearch(pos, radius: radius, circleMax: circleMax)
         }
         // Bewaar woningen van de afgelopen 7 dagen.
         listings = listings.filter { $0.seen > .now.addingTimeInterval(-7 * 86400) }
@@ -134,13 +136,46 @@ final class Radar: NSObject, ObservableObject {
         save(listings, key: "listings")
     }
 
-    private func search(_ street: Street) async throws -> [SearchResult] {
-        let query = Core.searchQuery(street)
+    /// Zoekt op de postcodegebieden binnen de grootste cirkel en meldt de woningen
+    /// in de kleinste cirkel (2×, 4×, … de straal) waarin iets te koop staat.
+    private func circleSearch(_ pos: CLLocationCoordinate2D, radius: Int, circleMax: Int) async throws {
+        status = "Niets binnen \(radius) m, zoeken in een cirkel…"
+        var candidates: [AreaCandidate] = []
+        for area in await Core.postcodeAreas(around: pos, radius: circleMax) {
+            let results = try await search(Core.areaQuery(area), label: "\(area.pc4) \(area.plaats)")
+            candidates += Core.parseAreaResults(results)
+        }
+        let located = await Core.locate(candidates, from: pos, maxDistance: circleMax)
+        for ring in Core.circleRings(radius: radius, max: circleMax) {
+            let inRing = located.filter { $0.afstand <= ring }
+            if !inRing.isEmpty {
+                circleNote = "Niets binnen \(radius) m; dit staat te koop binnen \(ring) m."
+                inRing.forEach(remember)
+                return
+            }
+        }
+        circleNote = "Ook binnen \(circleMax) m niets gevonden."
+    }
+
+    private func remember(_ found: Listing) {
+        var w = found
+        w.seen = .now
+        if let i = listings.firstIndex(where: { $0.id == w.id }) {
+            let old = listings[i]
+            listings[i] = w
+            if old.prijs.value != w.prijs.value { announce(w, priceChanged: true) }
+        } else {
+            listings.insert(w, at: 0)
+            announce(w, priceChanged: false)
+        }
+    }
+
+    private func search(_ query: String, label: String) async throws -> [SearchResult] {
         let key = query // nieuwe zoekopdracht = nieuwe cache
         let maxAge = Double(max(1, defaults.integer(forKey: SettingsKey.cacheHours))) * 3600
         if let c = streetCache[key], Date.now.timeIntervalSince(c.t) < maxAge { return c.results }
 
-        status = "Zoeken: \(street.straat)…"
+        status = "Zoeken: \(label)…"
         let client = SearchClient(
             serpApiKey: defaults.string(forKey: SettingsKey.serpApiKey) ?? "",
             serverURL: defaults.string(forKey: SettingsKey.serverURL) ?? "",

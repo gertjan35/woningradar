@@ -1,4 +1,7 @@
-import { nearbyAddresses, parseResults, filterByDistance, searchQuery, haversine } from "./core.js";
+import {
+  nearbyAddresses, parseResults, filterByDistance, searchQuery, haversine,
+  postcodeAreas, areaQuery, parseAreaResults, locateAreaCandidates, circleRings,
+} from "./core.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -15,6 +18,7 @@ const settings = {
   radius: store.get("radius", 100),
   token: store.get("token", ""),
   cacheHours: store.get("cacheHours", 24),
+  circleMax: store.get("circleMax", 1000),
 };
 let streetCache = store.get("streetCache", {});   // "straat|plaats" -> {t, results}
 let found = store.get("found", {});               // "straat|nr|plaats" -> woning
@@ -24,16 +28,17 @@ let watchId = null;
 let lastScanPos = null;
 let lastScanTime = 0;
 let scanning = false;
+let circleNote = "";
 let wakeLock = null;
 
 // --- instellingen ---
-for (const key of ["radius", "token", "cacheHours"]) {
+for (const key of ["radius", "token", "cacheHours", "circleMax"]) {
   $(key).value = settings[key];
   $(key).addEventListener("change", () => {
     settings[key] = key === "token" ? $(key).value.trim() : Number($(key).value);
     store.set(key, settings[key]);
     render();
-    if (key === "radius") lastScanPos = null; // opnieuw zoeken bij volgende positie
+    if (key === "radius" || key === "circleMax") lastScanPos = null; // opnieuw zoeken bij volgende positie
   });
 }
 
@@ -102,9 +107,11 @@ async function onPosition(p) {
   lastScanPos = pos;
   lastScanTime = Date.now();
   try {
+    circleNote = "";
     await scan(pos);
     showError("");
-    $("status").textContent = `Laatst gezocht om ${new Date().toLocaleTimeString("nl-NL", { timeStyle: "short" })} · ± ${acc} m`;
+    $("status").textContent = `Laatst gezocht om ${new Date().toLocaleTimeString("nl-NL", { timeStyle: "short" })} · ± ${acc} m` +
+      (circleNote ? ` · ${circleNote}` : "");
   } catch (e) {
     showError(e.message);
   } finally {
@@ -120,30 +127,62 @@ async function scan(pos) {
   $("street").textContent = current
     ? `${current.straat}, ${current.plaats}`
     : `Geen adres binnen ${searchRadius} m (${pos.lat.toFixed(5)}, ${pos.lon.toFixed(5)})`;
-  if (!streets.length) return;
 
+  let hits = 0;
   for (const { straat, plaats } of streets) {
-    const results = await searchStreet(straat, plaats);
+    const results = await search(searchQuery(straat, plaats), straat);
     const candidates = parseResults(results, straat, plaats);
     const near = await filterByDistance(candidates, pos, settings.radius, addresses);
-    for (const w of near) {
-      const key = `${w.straat}|${w.nummer}|${w.plaats}`;
-      const previous = found[key];
-      found[key] = { ...w, seen: Date.now() };
-      if (!previous || previous.prijs.value !== w.prijs.value) announce(w, previous);
-    }
+    hits += near.length;
+    near.forEach(remember);
   }
+
+  // Niets in de eigen straten: zoek in steeds grotere cirkels, ongeacht straat of plaats.
+  if (!hits && settings.circleMax > settings.radius) hits = await circleSearch(pos);
+
   store.set("found", found);
   render();
+  return hits;
 }
 
-async function searchStreet(straat, plaats) {
-  const query = searchQuery(straat, plaats);
-  const key = query; // nieuwe zoekopdracht = nieuwe cache
+/**
+ * Zoekt op de postcodegebieden (4 cijfers) binnen de grootste cirkel en meldt
+ * de woningen in de kleinste cirkel (2×, 4×, … de straal) waarin iets te koop staat.
+ */
+async function circleSearch(pos) {
+  $("status").textContent = `Niets binnen ${settings.radius} m, zoeken in een cirkel…`;
+  const areas = await postcodeAreas(pos, settings.circleMax);
+  const candidates = [];
+  for (const { pc4, plaats } of areas) {
+    candidates.push(...parseAreaResults(await search(areaQuery(pc4, plaats), `${pc4} ${plaats}`)));
+  }
+  const located = await locateAreaCandidates(candidates, pos, settings.circleMax);
+  for (const ring of circleRings(settings.radius, settings.circleMax)) {
+    const inRing = located.filter((w) => w.afstand <= ring);
+    if (inRing.length) {
+      circleNote = `Niets binnen ${settings.radius} m; dit staat te koop binnen ${ring} m.`;
+      inRing.forEach(remember);
+      return inRing.length;
+    }
+  }
+  circleNote = `Ook binnen ${settings.circleMax} m niets gevonden.`;
+  return 0;
+}
+
+function remember(w) {
+  const key = `${w.straat}|${w.nummer}|${w.plaats}`;
+  const previous = found[key];
+  found[key] = { ...w, seen: Date.now() };
+  if (!previous || previous.prijs.value !== w.prijs.value) announce(w, previous);
+}
+
+/** Google-zoekopdracht via de server, met cache per zoekopdracht. */
+async function search(query, label) {
+  const key = query;
   const cached = streetCache[key];
   if (cached && Date.now() - cached.t < settings.cacheHours * 3600e3) return cached.results;
 
-  $("status").textContent = `Zoeken: ${straat}…`;
+  $("status").textContent = `Zoeken: ${label}…`;
   const res = await fetch("api/search?q=" + encodeURIComponent(query), {
     headers: { "x-access-token": settings.token },
   });
@@ -195,7 +234,6 @@ function announce(w, previous) {
 
 // --- weergave ---
 function render() {
-  $("radiusLabel").textContent = settings.radius;
   const month = new Date().toISOString().slice(0, 7);
   $("quota").textContent = `${quota.month === month ? quota.count : 0} zoekopdr. deze maand`;
 

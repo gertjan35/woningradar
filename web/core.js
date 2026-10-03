@@ -171,3 +171,133 @@ export async function filterByDistance(candidates, pos, radius, addresses, fetch
   }
   return kept.sort((a, b) => a.afstand - b.afstand);
 }
+
+// --- Zoeken in een cirkel (als de straten zelf niets opleveren) ---
+
+/** Ringen voor het cirkelzoeken: 2×, 4×, 8× de straal, tot `max` meter. */
+export function circleRings(radius, max) {
+  const rings = [];
+  for (let r = radius * 2; r < max; r *= 2) rings.push(r);
+  if (max > radius) rings.push(max);
+  return rings;
+}
+
+/** Punt op `dist` meter van `pos` in richting `bearing` (graden). */
+export function offsetPoint(pos, dist, bearing) {
+  const b = (bearing * Math.PI) / 180;
+  const dLat = (dist * Math.cos(b)) / 111320;
+  const dLon = (dist * Math.sin(b)) / (111320 * Math.cos((pos.lat * Math.PI) / 180));
+  return { lat: pos.lat + dLat, lon: pos.lon + dLon };
+}
+
+/**
+ * Postcodegebieden (4 cijfers + plaats) binnen `radius` meter: PDOK wordt
+ * gevraagd naar het dichtstbijzijnde adres in het midden en op 8 punten op
+ * de halve en de hele cirkel. Geeft [{pc4, plaats}] terug, dichtstbij eerst.
+ */
+export async function postcodeAreas(pos, radius, fetchFn = fetch) {
+  const points = [pos];
+  for (const f of [0.5, 1]) for (let b = 0; b < 360; b += 45) points.push(offsetPoint(pos, radius * f, b));
+  const fl = encodeURIComponent("postcode woonplaatsnaam afstand");
+  const docs = await Promise.all(points.map(async (p) => {
+    try {
+      const res = await fetchFn(`${PDOK}/reverse?lat=${p.lat}&lon=${p.lon}&type=adres&rows=1&distance=250&fl=${fl}`);
+      return res.ok ? (await res.json()).response?.docs?.[0] : null;
+    } catch { return null; }
+  }));
+  const areas = new Map();
+  for (const d of docs) {
+    const pc4 = d?.postcode?.slice(0, 4);
+    if (pc4 && d.woonplaatsnaam && !areas.has(pc4)) areas.set(pc4, { pc4, plaats: d.woonplaatsnaam });
+  }
+  return [...areas.values()];
+}
+
+export function areaQuery(pc4, plaats) {
+  const sites = SITES.map((s) => `site:${s}`).join(" OR ");
+  return `"${pc4}" ${plaats} te koop (${sites})`;
+}
+
+/**
+ * Adressen (huisnummer + postcode) in een tekst of link, ongeacht de straat:
+ * "Julianalaan 12 9781 EK Bedum" of huispedia.nl/bedum/9781ek/julianalaan/12.
+ */
+export function extractPostcodeAddresses(text, link = "") {
+  const found = new Map();
+  const add = (nummer, pc) => {
+    const postcode = pc.replace(/\s/g, "").toUpperCase();
+    found.set(`${postcode}|${nummer}`, { postcode, nummer: Number(nummer) });
+  };
+  const re = /(?:^|[^\d€.,])(\d{1,5})[a-zA-Z]?(?:[-\s](?:bis|[a-zA-Z]|\d{1,3}))?,?\s+(\d{4}\s?[A-Z]{2})\b/g;
+  let m;
+  while ((m = re.exec(text))) add(m[1], m[2]);
+  const u = /\/(\d{4}[a-z]{2})\/[^/]+\/(\d{1,5})(?:[^\d]|$)/i.exec(link);
+  if (u) add(u[2], u[1]);
+  return [...found.values()];
+}
+
+/**
+ * Zoekresultaten van een postcodegebied -> kandidaten [{postcode, nummer, prijs, link, bron}],
+ * met dezelfde filters als parseResults.
+ */
+export function parseAreaResults(results) {
+  const out = new Map();
+  for (const r of results ?? []) {
+    const bron = siteOf(r.link);
+    if (!bron) continue;
+    const text = [r.title, r.snippet, r.rich_snippet ? JSON.stringify(r.rich_snippet) : ""]
+      .filter(Boolean)
+      .join(" • ");
+    if (/\bverkocht\b/i.test(text)) continue;
+    if (/\bte huur\b|\bhuurwoning\b|\bhuurprijs\b/i.test(text)) continue;
+    if (!/te koop|vraagprijs|k\.k\.|v\.o\.n\./i.test(text)) continue;
+    const adressen = extractPostcodeAddresses(text, r.link);
+    if (adressen.length !== 1) continue; // overzichtspagina of geen adres
+    const prijs = extractPrice(text);
+    if (!prijs) continue;
+    const key = `${adressen[0].postcode}|${adressen[0].nummer}`;
+    if (!out.has(key)) out.set(key, { ...adressen[0], prijs, link: r.link, bron });
+  }
+  return [...out.values()];
+}
+
+/** Officieel adres + coördinaten bij postcode + huisnummer (PDOK). */
+const postcodeCache = new Map();
+
+export async function geocodePostcode(postcode, nummer, fetchFn = fetch) {
+  const key = `${postcode}|${nummer}`;
+  if (!postcodeCache.has(key)) {
+    const p = lookupPostcode(postcode, nummer, fetchFn);
+    postcodeCache.set(key, p);
+    p.then((r) => r || postcodeCache.delete(key), () => postcodeCache.delete(key));
+  }
+  return postcodeCache.get(key);
+}
+
+async function lookupPostcode(postcode, nummer, fetchFn) {
+  const fl = encodeURIComponent("straatnaam huisnummer postcode woonplaatsnaam centroide_ll");
+  const q = encodeURIComponent(`${postcode} ${nummer}`);
+  const fq = [`type:adres`, `postcode:${postcode}`, `huisnummer:${nummer}`]
+    .map((f) => `&fq=${encodeURIComponent(f)}`).join("");
+  const res = await fetchFn(`${PDOK}/free?q=${q}${fq}&rows=1&fl=${fl}`);
+  if (!res.ok) return null;
+  const doc = (await res.json()).response?.docs?.[0];
+  if (!doc || doc.postcode !== postcode || Number(doc.huisnummer) !== Number(nummer)) return null;
+  const p = parsePoint(doc.centroide_ll);
+  return p && { straat: doc.straatnaam, plaats: doc.woonplaatsnaam, ...p };
+}
+
+/**
+ * Zet kandidaten uit het cirkelzoeken om naar woningen met straat, plaats en
+ * afstand, en houdt alleen die binnen `maxDist` over (dichtstbij eerst).
+ */
+export async function locateAreaCandidates(candidates, pos, maxDist, fetchFn = fetch) {
+  const located = await Promise.all(candidates.map(async (c) => {
+    const a = await geocodePostcode(c.postcode, c.nummer, fetchFn);
+    if (!a) return null;
+    const afstand = Math.round(haversine(pos.lat, pos.lon, a.lat, a.lon));
+    return { straat: a.straat, nummer: c.nummer, plaats: a.plaats, prijs: c.prijs,
+             link: c.link, bron: c.bron, afstand, cirkel: true };
+  }));
+  return located.filter((w) => w && w.afstand <= maxDist).sort((a, b) => a.afstand - b.afstand);
+}

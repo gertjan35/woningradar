@@ -107,6 +107,7 @@ enum Core {
             let straatnaam: String?
             let huisnummer: Int?
             let woonplaatsnaam: String?
+            let postcode: String?
             let weergavenaam: String?
             let afstand: Double?
             let centroide_ll: String?
@@ -247,5 +248,161 @@ enum Core {
             kept.append(w)
         }
         return kept.sorted { $0.afstand < $1.afstand }
+    }
+}
+
+// MARK: - Zoeken in een cirkel (als de straten zelf niets opleveren)
+
+struct PostcodeArea: Hashable {
+    let pc4: String
+    let plaats: String
+}
+
+/// Kandidaat uit het cirkelzoeken: nog zonder straatnaam en afstand.
+struct AreaCandidate {
+    let postcode: String
+    let nummer: Int
+    let prijs: Price
+    let link: String
+    let bron: String
+}
+
+extension Core {
+    /// Ringen: 2×, 4×, 8× de straal, tot `max` meter.
+    static func circleRings(radius: Int, max: Int) -> [Int] {
+        var rings: [Int] = []
+        var r = radius * 2
+        while r < max { rings.append(r); r *= 2 }
+        if max > radius { rings.append(max) }
+        return rings
+    }
+
+    static func offsetPoint(_ pos: CLLocationCoordinate2D, distance: Double, bearing: Double) -> CLLocationCoordinate2D {
+        let b = bearing * .pi / 180
+        let dLat = distance * cos(b) / 111_320
+        let dLon = distance * sin(b) / (111_320 * cos(pos.latitude * .pi / 180))
+        return CLLocationCoordinate2D(latitude: pos.latitude + dLat, longitude: pos.longitude + dLon)
+    }
+
+    /// Postcodegebieden (4 cijfers + plaats) binnen `radius` meter, via het
+    /// midden en 8 punten op de halve en de hele cirkel.
+    static func postcodeAreas(around pos: CLLocationCoordinate2D, radius: Int) async -> [PostcodeArea] {
+        var points = [pos]
+        for f in [0.5, 1.0] {
+            for b in stride(from: 0.0, to: 360.0, by: 45.0) {
+                points.append(offsetPoint(pos, distance: Double(radius) * f, bearing: b))
+            }
+        }
+        let docs = await withTaskGroup(of: (Int, PDOKResponse.Doc?).self) { group in
+            for (i, p) in points.enumerated() {
+                group.addTask {
+                    var comps = URLComponents(string: "\(Core.pdok)/reverse")!
+                    comps.queryItems = [
+                        .init(name: "lat", value: String(p.latitude)),
+                        .init(name: "lon", value: String(p.longitude)),
+                        .init(name: "type", value: "adres"),
+                        .init(name: "rows", value: "1"),
+                        .init(name: "distance", value: "250"),
+                        .init(name: "fl", value: "postcode woonplaatsnaam afstand"),
+                    ]
+                    guard let (data, _) = try? await URLSession.shared.data(from: comps.url!),
+                          let doc = try? JSONDecoder().decode(PDOKResponse.self, from: data).response.docs.first
+                    else { return (i, nil) }
+                    return (i, doc)
+                }
+            }
+            var out = [(Int, PDOKResponse.Doc?)]()
+            for await r in group { out.append(r) }
+            return out.sorted { $0.0 < $1.0 }.map(\.1)
+        }
+        var areas: [PostcodeArea] = []
+        for d in docs {
+            guard let pc = d?.postcode, pc.count >= 4, let plaats = d?.woonplaatsnaam else { continue }
+            let pc4 = String(pc.prefix(4))
+            if !areas.contains(where: { $0.pc4 == pc4 }) { areas.append(PostcodeArea(pc4: pc4, plaats: plaats)) }
+        }
+        return areas
+    }
+
+    static func areaQuery(_ a: PostcodeArea) -> String {
+        let filter = sites.map { "site:\($0)" }.joined(separator: " OR ")
+        return "\"\(a.pc4)\" \(a.plaats) te koop (\(filter))"
+    }
+
+    /// Adressen (postcode + huisnummer) in tekst of link, ongeacht de straat.
+    static func extractPostcodeAddresses(_ text: String, link: String) -> [(postcode: String, nummer: Int)] {
+        var out: [(postcode: String, nummer: Int)] = []
+        func add(_ nummer: String, _ pc: String) {
+            let postcode = pc.replacingOccurrences(of: " ", with: "").uppercased()
+            guard let n = Int(nummer), !out.contains(where: { $0.postcode == postcode && $0.nummer == n }) else { return }
+            out.append((postcode, n))
+        }
+        let pattern = #"(?:^|[^\d€.,])(\d{1,5})[a-zA-Z]?(?:[-\s](?:bis|[a-zA-Z]|\d{1,3}))?,?\s+(\d{4}\s?[A-Z]{2})\b"#
+        if let re = try? NSRegularExpression(pattern: pattern) {
+            let ns = text as NSString
+            for m in re.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+                add(ns.substring(with: m.range(at: 1)), ns.substring(with: m.range(at: 2)))
+            }
+        }
+        if let re = try? NSRegularExpression(pattern: #"/(\d{4}[a-z]{2})/[^/]+/(\d{1,5})(?:[^\d]|$)"#, options: .caseInsensitive) {
+            let ns = link as NSString
+            if let m = re.firstMatch(in: link, range: NSRange(location: 0, length: ns.length)) {
+                add(ns.substring(with: m.range(at: 2)), ns.substring(with: m.range(at: 1)))
+            }
+        }
+        return out
+    }
+
+    static func parseAreaResults(_ results: [SearchResult]) -> [AreaCandidate] {
+        var out: [AreaCandidate] = []
+        for r in results {
+            guard let link = r.link, let bron = site(of: link) else { continue }
+            let text = [r.title, r.snippet, r.richSnippet?.text].compactMap { $0 }.joined(separator: " • ")
+            let lower = text.lowercased()
+            if lower.firstMatch(of: #/\bverkocht\b/#) != nil { continue }
+            if lower.firstMatch(of: #/\bte huur\b|\bhuurwoning\b|\bhuurprijs\b/#) != nil { continue }
+            if lower.firstMatch(of: #/te koop|vraagprijs|k\.k\.|v\.o\.n\./#) == nil { continue }
+            let adressen = extractPostcodeAddresses(text, link: link)
+            guard adressen.count == 1, let prijs = extractPrice(text) else { continue }
+            let a = adressen[0]
+            if out.contains(where: { $0.postcode == a.postcode && $0.nummer == a.nummer }) { continue }
+            out.append(AreaCandidate(postcode: a.postcode, nummer: a.nummer, prijs: prijs, link: link, bron: bron))
+        }
+        return out
+    }
+
+    /// Officieel adres + coördinaten bij postcode + huisnummer.
+    static func geocodePostcode(_ postcode: String, nummer: Int) async -> (straat: String, plaats: String, coord: CLLocationCoordinate2D)? {
+        var comps = URLComponents(string: "\(pdok)/free")!
+        comps.queryItems = [
+            .init(name: "q", value: "\(postcode) \(nummer)"),
+            .init(name: "fq", value: "type:adres"),
+            .init(name: "fq", value: "postcode:\(postcode)"),
+            .init(name: "fq", value: "huisnummer:\(nummer)"),
+            .init(name: "rows", value: "1"),
+            .init(name: "fl", value: "straatnaam huisnummer postcode woonplaatsnaam centroide_ll"),
+        ]
+        guard let (data, _) = try? await URLSession.shared.data(from: comps.url!),
+              let doc = try? JSONDecoder().decode(PDOKResponse.self, from: data).response.docs.first,
+              doc.postcode == postcode, doc.huisnummer == nummer,
+              let straat = doc.straatnaam, let plaats = doc.woonplaatsnaam,
+              let wkt = doc.centroide_ll, let p = parsePoint(wkt)
+        else { return nil }
+        return (straat, plaats, p)
+    }
+
+    /// Kandidaten -> woningen met straat, plaats en afstand, binnen `maxDistance`.
+    static func locate(_ candidates: [AreaCandidate], from pos: CLLocationCoordinate2D, maxDistance: Int) async -> [Listing] {
+        let here = CLLocation(latitude: pos.latitude, longitude: pos.longitude)
+        var out: [Listing] = []
+        for c in candidates {
+            guard let a = await geocodePostcode(c.postcode, nummer: c.nummer) else { continue }
+            let d = here.distance(from: CLLocation(latitude: a.coord.latitude, longitude: a.coord.longitude))
+            guard d <= Double(maxDistance) else { continue }
+            var w = Listing(straat: a.straat, nummer: c.nummer, plaats: a.plaats, prijs: c.prijs, link: c.link, bron: c.bron)
+            w.afstand = Int(d.rounded())
+            out.append(w)
+        }
+        return out.sorted { $0.afstand < $1.afstand }
     }
 }

@@ -62,7 +62,7 @@
   <button class="primary" id="toggle">Start</button>
 
   <div class="card" style="margin-top:12px">
-    <strong>Te koop binnen <span id="radiusLabel">100</span> m</strong>
+    <strong>Te koop in de buurt</strong>
     <div class="muted" id="quota"></div>
     <ul id="list"><li class="muted">Nog niets gevonden.</li></ul>
   </div>
@@ -73,6 +73,8 @@
     <input id="radius" type="number" min="25" max="1000" step="25">
     <label for="token">Toegangscode (ACCESS_TOKEN van de server)</label>
     <input id="token" type="password" autocomplete="off">
+    <label for="circleMax">Niets gevonden? Zoek in een cirkel tot (meter, 0 = uit)</label>
+    <input id="circleMax" type="number" min="0" max="5000" step="100">
     <label for="cacheHours">Een straat opnieuw zoeken na (uur)</label>
     <input id="cacheHours" type="number" min="1" max="168">
     <button class="secondary" id="notify">Meldingen toestaan</button>
